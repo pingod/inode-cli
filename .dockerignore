@@ -1,0 +1,14 @@
+target/
+.build/
+dist/
+.git/
+.github/
+examples/
+tests/
+scripts/
+*.md
+LICENSE
+.env
+.env.*
+*.pem
+*.key

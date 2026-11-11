@@ -1,108 +1,23 @@
 use anyhow::{Context, Result, ensure};
-use clap::{Args, Parser, Subcommand};
+use clap::Parser;
 use inode_cli::{
     platform::{self, Platform},
     protocol::{self, Session},
 };
-use ipnet::Ipv4Net;
 use serde::Serialize;
 use std::{
     io::{self, BufRead, Write},
-    path::PathBuf,
     time::Duration,
 };
 use url::Url;
+mod args;
 mod captcha;
 mod connection;
 mod readiness;
+pub(crate) use args::*;
 use connection::connected;
 use inode_cli::captcha_cnn;
 use zeroize::Zeroizing;
-
-#[derive(Parser)]
-#[command(
-    name = "inode",
-    version,
-    about = "Experimental H3C SSL VPN CLI for Windows, Linux and macOS"
-)]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
-#[derive(Subcommand)]
-enum Commands {
-    /// Inspect local prerequisites, without changing network configuration.
-    Doctor,
-    /// Discover gateway protocol without submitting credentials.
-    Probe(GatewayArgs),
-    /// Authenticate once and log out, without creating a TUN interface.
-    Authenticate(LoginArgs),
-    /// Connect in foreground; Ctrl+C removes this connection's interface/routes.
-    Connect(ConnectArgs),
-    /// [test] Recognize a CAPTCHA image file with the embedded CNN.
-    CaptchaTest { file: PathBuf },
-}
-#[derive(Args)]
-struct GatewayArgs {
-    /// HTTPS VPN gateway (no path), e.g. https://vpn.example.com:443.
-    gateway: String,
-    /// Trusted organization CA certificate in PEM format.
-    #[arg(long)]
-    ca: Option<PathBuf>,
-    /// Exact trusted server certificate SHA-256 fingerprint (64 hex characters).
-    #[arg(long)]
-    servercert: Option<String>,
-    #[arg(long)]
-    domain: Option<String>,
-    #[arg(long, default_value_t = 15, value_parser = clap::value_parser!(u64).range(1..=120))]
-    timeout: u64,
-    /// HTTP proxy for reaching the gateway, e.g. http://127.0.0.1:1080.
-    /// Also read from INODE_PROXY. The CONNECT tunnel carries all traffic.
-    #[arg(long)]
-    proxy: Option<String>,
-}
-#[derive(Args)]
-struct LoginArgs {
-    #[command(flatten)]
-    gateway: GatewayArgs,
-    #[arg(long)]
-    user: Option<String>,
-    /// Read one password line from stdin instead of the terminal (automation).
-    #[arg(long)]
-    password_stdin: bool,
-    /// Optionally save CAPTCHA; interactive terminals display it directly.
-    #[arg(long)]
-    captcha_file: Option<PathBuf>,
-    /// Width of the inline color CAPTCHA in terminal columns.
-    #[arg(long, default_value_t = 96, value_parser = clap::value_parser!(u32).range(40..=160))]
-    captcha_columns: u32,
-    /// Solve the CAPTCHA manually (default: automatic on-device recognition).
-    #[arg(long)]
-    manual_captcha: bool,
-    /// Minimum confidence to submit an auto-recognized CAPTCHA (0-1).
-    #[arg(long, default_value_t = 0.90)]
-    captcha_confidence: f32,
-}
-#[derive(Args)]
-struct ConnectArgs {
-    #[command(flatten)]
-    login: LoginArgs,
-    /// Internal IPv4 network; repeat for more networks. DNS/default route are unchanged.
-    #[arg(long)]
-    route: Vec<Ipv4Net>,
-    /// Consecutive tunnel reconnects before giving up; 0 exits on the first drop.
-    #[arg(long, default_value_t = 5)]
-    reconnect_attempts: u32,
-    /// TCP keepalive interval in seconds for idle tunnels; 0 disables it.
-    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(0..=3600))]
-    keepalive: u64,
-    /// Also install the routes the gateway advertises in its NET_EXTEND response.
-    #[arg(long)]
-    gateway_routes: bool,
-    /// Tunnel interface MTU. The protocol carries no MTU, so this is a local choice.
-    #[arg(long, default_value_t = 1400, value_parser = clap::value_parser!(u16).range(576..=1500))]
-    mtu: u16,
-}
 
 fn session_with_keepalive(args: &GatewayArgs, keepalive: Option<Duration>) -> Result<Session> {
     Ok(session(args)?.with_keepalive(keepalive))
@@ -122,10 +37,16 @@ fn session(args: &GatewayArgs) -> Result<Session> {
         .map(|p| Url::parse(&p))
         .transpose()
         .context("Invalid proxy URL")?;
+    if args.insecure {
+        eprintln!(
+            "WARNING: --insecure skips certificate verification; credentials and traffic can be intercepted."
+        );
+    }
     Ok(Session::new(
         protocol::gateway(&args.gateway)?,
         ca.as_deref(),
         args.servercert.as_deref(),
+        args.insecure,
         Duration::from_secs(args.timeout),
     )?
     .with_proxy(proxy))

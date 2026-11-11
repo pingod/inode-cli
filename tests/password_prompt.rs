@@ -82,7 +82,14 @@ async fn exercise(kind: &'static str) {
             );
         }
     });
-    let session = Session::new(base.clone(), None, Some(&pin), Duration::from_secs(5)).unwrap();
+    let session = Session::new(
+        base.clone(),
+        None,
+        Some(&pin),
+        false,
+        Duration::from_secs(5),
+    )
+    .unwrap();
     let info = GatewayInfo {
         login: base.join("/login").unwrap(),
         logout: None,

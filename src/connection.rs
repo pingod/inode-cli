@@ -3,6 +3,7 @@ use anyhow::{Context, Result, ensure};
 use inode_cli::{
     platform::{self, Platform, Routes, SystemExecutor},
     protocol::{self, Frames, Session, TunnelParams},
+    proxy,
 };
 use std::time::Duration;
 use tokio::{
@@ -75,6 +76,37 @@ pub(super) async fn connected(session: &Session, args: &ConnectArgs) -> Result<(
     let name = device.name()?;
     crate::readiness::wait(&device, address).await?;
     let _routes = Routes::install(platform, &name, &routes, SystemExecutor)?;
+    // Proxy destinations are reached through the kernel routes installed above;
+    // dropping this handle (any return path) stops the listener and its relays.
+    let auth = match (&args.proxy_user, &args.proxy_password) {
+        (Some(user), Some(password)) => {
+            ensure!(
+                !user.is_empty() && !password.is_empty(),
+                "--proxy-user and --proxy-password must be non-empty"
+            );
+            Some((user.clone(), password.clone()))
+        }
+        (None, None) => None,
+        _ => anyhow::bail!("--proxy-user requires --proxy-password"),
+    };
+    let proxy = args
+        .proxy_listen
+        .map(|listen| {
+            proxy::Proxy::start(
+                listen,
+                proxy::Config {
+                    auth,
+                    timeout: session.timeout,
+                },
+            )
+        })
+        .transpose()?;
+    if let Some(proxy) = &proxy {
+        eprintln!(
+            "Proxy ready: {} (HTTP CONNECT/absolute-form, SOCKS5, SOCKS4/4a)",
+            proxy.local_addr()
+        );
+    }
     eprintln!(
         "Tunnel ready: {name}, IP {address}. DNS/default route unchanged. Ctrl+C disconnects."
     );

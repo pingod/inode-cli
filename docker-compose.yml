@@ -1,0 +1,27 @@
+services:
+  inode:
+    build: .
+    image: inode-cli:latest
+    restart: unless-stopped
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    ports:
+      # Only the proxy is published, on the loopback interface.
+      - "127.0.0.1:1080:1080"
+    environment:
+      INODE_GATEWAY: https://vpn.example.com:443
+      INODE_USER: your-account
+      # 64 hex characters, from `openssl x509 -fingerprint -sha256`.
+      INODE_SERVERCERT: ""
+      INODE_PASSWORD_FILE: /run/secrets/inode_password
+      # Optional proxy credentials; empty disables proxy authentication.
+      INODE_PROXY_USER: ""
+      INODE_PROXY_PASSWORD: ""
+    secrets:
+      - inode_password
+
+secrets:
+  inode_password:
+    file: ./inode-password.txt

@@ -4,7 +4,13 @@ use std::time::Duration;
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let base = gateway(&args[1])?;
-    let session = Session::new(base.clone(), None, Some(&args[2]), Duration::from_secs(15))?;
+    let session = Session::new(
+        base.clone(),
+        None,
+        Some(&args[2]),
+        false,
+        Duration::from_secs(15),
+    )?;
     let body = session
         .request(endpoint(&base, &args[3])?, None, true)
         .await?;

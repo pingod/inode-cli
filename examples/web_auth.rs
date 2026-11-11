@@ -10,7 +10,13 @@ use zeroize::Zeroizing;
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let base = gateway(&args[1])?;
-    let s = Session::new(base.clone(), None, Some(&args[2]), Duration::from_secs(15))?;
+    let s = Session::new(
+        base.clone(),
+        None,
+        Some(&args[2]),
+        false,
+        Duration::from_secs(15),
+    )?;
     let info = s.discover(None).await?;
     let config = s
         .request(endpoint(&base, "/wnm/login/login.json")?, None, false)

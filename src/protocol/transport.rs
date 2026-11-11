@@ -23,8 +23,13 @@ impl Session {
         gateway: Url,
         ca: Option<&[u8]>,
         pin: Option<&str>,
+        insecure: bool,
         timeout: Duration,
     ) -> Result<Self> {
+        ensure!(
+            !(insecure && (ca.is_some() || pin.is_some())),
+            "--insecure cannot be combined with a CA or a certificate fingerprint"
+        );
         let jar = Arc::new(Jar::default());
         let mut tls = native_tls::TlsConnector::builder();
         tls.min_protocol_version(Some(native_tls::Protocol::Tlsv12));
@@ -34,9 +39,9 @@ impl Session {
             );
         }
         let pin = pin.map(parse_pin).transpose()?;
-        if pin.is_some() {
-            // Exact leaf-certificate verification occurs on this same stream,
-            // before any HTTP data or credentials can be transmitted.
+        if pin.is_some() || insecure {
+            // With a pin, the exact leaf certificate is checked on this same
+            // stream before any HTTP data; --insecure skips every check.
             tls.danger_accept_invalid_certs(true)
                 .danger_accept_invalid_hostnames(true);
         }

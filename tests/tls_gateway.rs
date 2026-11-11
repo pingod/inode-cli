@@ -111,6 +111,7 @@ async fn full_pinned_tls_authentication_tunnel_and_logout() {
         protocol::gateway(&url).unwrap(),
         None,
         Some(&pin),
+        false,
         Duration::from_secs(5),
     )
     .unwrap();
@@ -145,6 +146,7 @@ async fn incorrect_pin_sends_no_http_or_credentials() {
         protocol::gateway(&url).unwrap(),
         None,
         Some(&"00".repeat(32)),
+        false,
         Duration::from_secs(5),
     )
     .unwrap();

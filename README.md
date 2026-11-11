@@ -15,6 +15,81 @@ cargo test --locked --all-targets
 
 Linux 构建需要 C 编译器、pkg-config、OpenSSL 开发包；运行需要 `/dev/net/tun` 和 iproute2。Windows 构建需要 MSVC C++ 工具链；连接时将官方、与 CPU 架构匹配的 [wintun.dll](https://www.wintun.net/) 放在 inode.exe 旁（Release 的 Windows zip 已附带对应架构的 wintun.dll，解压即用）。macOS 使用系统 utun 和 route。建立接口及配置路由需要管理员/root 权限；probe、authenticate 不需要。
 
+## Docker
+
+镜像在 `rust:1.92-slim-bookworm` 里构建，运行阶段只带 `ca-certificates`、`libssl3` 和 `iproute2`，最终约 145 MB。APT 默认走 `mirrors.ustc.edu.cn`，crates 索引默认走 `rsproxy.cn`，两者都可用 `--build-arg APT_MIRROR=` / `CARGO_REGISTRY=` 覆盖；`Cargo.lock` 的校验和照常生效。
+
+```sh
+docker build -t inode-cli .
+# 无法直连 Docker Hub 时换基础镜像源：
+docker build -t inode-cli \
+  --build-arg RUST_IMAGE=docker.m.daocloud.io/library/rust:1.92-slim-bookworm \
+  --build-arg RUNTIME_IMAGE=docker.m.daocloud.io/library/debian:bookworm-slim .
+```
+
+### 代理模式（推荐）
+
+VPN 完全留在容器命名空间里，宿主机只拿到一个代理端口。容器入口脚本从环境变量组装 `connect` 参数并启动 `--proxy-listen`：
+
+```sh
+docker run -d --name inode-vpn \
+  --device /dev/net/tun:/dev/net/tun --cap-add NET_ADMIN \
+  -p 127.0.0.1:1080:1080 \
+  -e INODE_GATEWAY=https://vpn.example.com:443 \
+  -e INODE_USER=your-account \
+  -e INODE_SERVERCERT=<64位SHA256证书指纹> \
+  -e INODE_PASSWORD_FILE=/run/secrets/inode-password \
+  -v "$PWD/inode-password:/run/secrets/inode-password:ro" \
+  inode-cli
+```
+
+等价写法见 `docker-compose.yml`（密码用 compose secret 提供）：`docker compose up -d`。
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `INODE_GATEWAY` | 必填 | 网关 URL，例如 `https://vpn.example.com:443` |
+| `INODE_USER` | 必填 | 账号；密码从 `INODE_PASSWORD_FILE`（推荐）或 `INODE_PASSWORD` 读 |
+| `INODE_SERVERCERT` | 空 | 64 位 SHA256 证书指纹，自签名网关必填 |
+| `INODE_INSECURE` | `0` | 设 `1` 完全跳过证书校验（与 `INODE_SERVERCERT`/`INODE_CA` 互斥，仅作最后手段） |
+| `INODE_CA` | 空 | 组织 CA 的 PEM 路径（容器内路径） |
+| `INODE_ROUTES` | 空 | 额外路由，空格分隔 |
+| `INODE_GATEWAY_ROUTES` | `1` | 是否安装网关下发的网段 |
+| `INODE_PROXY_LISTEN` | `0.0.0.0:1080` | 单端口多协议监听地址 |
+| `INODE_PROXY_USER` / `INODE_PROXY_PASSWORD` | 空 | 同时启用 HTTP Basic 与 SOCKS5 认证 |
+| `INODE_MTU` / `INODE_KEEPALIVE` / `INODE_RECONNECT_ATTEMPTS` | `1400` / `30` / `5` | 同 `connect` 参数 |
+
+同一个端口按首字节自动识别三种协议，客户端不需要换端口：
+
+```sh
+curl -x http://127.0.0.1:1080 https://intranet.example/        # HTTP CONNECT（https）
+curl -x http://127.0.0.1:1080 http://10.20.0.18/api            # HTTP 绝对 URI（http）
+curl -x socks5h://127.0.0.1:1080 http://10.20.0.18/            # SOCKS5
+curl -x socks4a://127.0.0.1:1080 http://intranet.example/      # SOCKS4/4a
+curl -x http://127.0.0.1:1080 -U user:pass https://intranet.example/  # 启用认证后
+```
+
+限制：只转发 TCP，没有 UDP；域名在容器内解析（H3C 协议不下发 DNS），内网域名需要自备 DNS 或直接写 IP；HTTP 绝对 URI 一个连接只转发一个请求（强制 `Connection: close`）；SOCKS4/4a 没有认证字段，启用 `INODE_PROXY_*` 后会被拒绝。容器内以 root 运行，仅额外暴露 `/dev/net/tun` 与 `NET_ADMIN`，DNS 和默认路由不变；`docker stop` 的 SIGTERM 会触发接口与路由回收。
+
+### 直接命令行
+
+给入口脚本传参数时原样交给 `inode`，例如 `docker run --rm inode-cli --version`、`probe`、`authenticate`（不需要特权）：
+
+```sh
+docker run --rm -it inode-cli probe https://vpn.example.com:443
+docker run --rm -it inode-cli authenticate https://vpn.example.com:443 --user your-account
+```
+
+`connect` 需要 `/dev/net/tun` 与 `NET_ADMIN`。加 `--network host` 会把接口和路由建到宿主机（VPN 对宿主机直接生效，不再是隔离的代理模式）；不加则只在容器内生效：
+
+```sh
+docker run --rm -it --device /dev/net/tun:/dev/net/tun --cap-add NET_ADMIN \
+  -p 127.0.0.1:1080:1080 \
+  inode-cli connect https://vpn.example.com:443 --user your-account \
+  --gateway-routes --proxy-listen 0.0.0.0:1080
+```
+
+`-it` 是隐藏输入密码的前提；自动化改用 `-i` 加 `--password-stdin`。
+
 ## 使用
 
 ```sh
@@ -25,9 +100,11 @@ inode connect https://vpn.example.com:443 --user your-account --route 10.20.0.0/
 inode captcha-test captcha.png
 ```
 
+`connect` 可加 `--proxy-listen <addr>`（例如 `127.0.0.1:1080`）在同一端口同时提供 HTTP（CONNECT 与绝对 URI）、SOCKS5、SOCKS4/4a 代理，按连接首字节自动识别；`--proxy-user` / `--proxy-password` 同时启用 HTTP Basic 与 SOCKS5 用户名密码认证。代理只转发 TCP，域名在本机解析，隧道进程退出时监听随之关闭。
+
 密码通过终端隐藏输入。自动化可用 `--password-stdin`，从受保护的秘密管理程序管道输入；不要将密码放在命令参数、脚本或 shell 历史中。
 
-自签名网关使用经独立确认的 `--servercert <64位SHA256证书指纹>`，或对主机名有效的组织 CA 文件 `--ca organization-ca.pem`。指纹在每条实际 TLS 连接上、发送 HTTP 数据之前校验，不提供跳过验证开关。
+自签名网关使用经独立确认的 `--servercert <64位SHA256证书指纹>`，或对主机名有效的组织 CA 文件 `--ca organization-ca.pem`。指纹在每条实际 TLS 连接上、发送 HTTP 数据之前校验，不匹配立即终止且不发送凭据。`--insecure` 完全跳过证书链、主机名与指纹校验（与 `--servercert`/`--ca` 互斥），会在启动时打印警告；它使账号、密码和隧道流量暴露于中间人，仅用于无法固定指纹的过渡场景。
 
 网关要求图片验证码时，默认由内嵌 CNN 在本机自动识别，不联网、不调用第三方打码服务。识别置信度低于 `--captcha-confidence`（默认 0.90）时只重新抓图、不提交，因此错误提交最多 3 次即停止，避免账号锁定；两次抓图之间固定间隔 300 毫秒。模型权重 `src/captcha_model.bin` 随二进制静态链接，只针对目标网关的验证码样式训练，换一种样式需要重新训练。
 
