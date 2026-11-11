@@ -1,7 +1,7 @@
 services:
   inode:
-    build: .
-    image: inode-cli:latest
+    image: ghcr.io/pingod/inode-cli:latest
+    # build: .   # 本地构建时改用这一行
     restart: unless-stopped
     devices:
       - /dev/net/tun:/dev/net/tun

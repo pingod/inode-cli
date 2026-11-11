@@ -3,16 +3,37 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
+  packages: write
 
 env:
   CARGO_TERM_COLOR: always
   WINTUN_VERSION: '0.14.1'
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Resolve version and check the tag
+        id: version
+        shell: bash
+        run: |
+          ver=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            tag=${GITHUB_REF_NAME#v}
+            echo "Cargo.toml version=$ver  tag=$tag"
+            [ "$ver" = "$tag" ] || { echo "tag v$tag != Cargo.toml version $ver"; exit 1; }
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -45,20 +66,13 @@ jobs:
           toolchain: '1.92.0'
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - name: Check tag matches Cargo.toml version
-        shell: bash
-        run: |
-          ver=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
-          tag=${GITHUB_REF_NAME#v}
-          echo "Cargo.toml version=$ver  tag=$tag"
-          [ "$ver" = "$tag" ] || { echo "tag v$tag != Cargo.toml version $ver"; exit 1; }
       - name: Test before publishing
         run: cargo test --locked --all-targets --target ${{ matrix.target }}
       - run: cargo build --locked --release --target ${{ matrix.target }}
       - name: Package
         shell: bash
         run: |
-          ver=${GITHUB_REF_NAME#v}
+          ver=${{ needs.version.outputs.version }}
           name=inode-v$ver-${{ matrix.target }}${{ matrix.ext }}
           cp target/${{ matrix.target }}/release/inode${{ matrix.ext }} "$name"
           if [ "$RUNNER_OS" = Windows ]; then
@@ -73,7 +87,15 @@ jobs:
           fi
           if command -v sha256sum >/dev/null; then sha256sum "$asset" > "$asset.sha256"; else shasum -a 256 "$asset" > "$asset.sha256"; fi
           echo "ASSET=$asset" >> $GITHUB_ENV
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: inode-${{ matrix.target }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256
       - name: Upload to release
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -81,3 +103,85 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" --title "inode $GITHUB_REF_NAME" --generate-notes 2>/dev/null || true
           gh release upload "$GITHUB_REF_NAME" "$ASSET" "$ASSET.sha256" --clobber
+
+  static:
+    name: Static x86_64 Linux binary
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.92.0'
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - name: Install musl toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools perl make
+      - name: Test and build against musl
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: |
+          cargo test --locked --all-targets --target x86_64-unknown-linux-musl
+          cargo build --locked --release --target x86_64-unknown-linux-musl
+      - name: Verify no runtime libraries are required
+        run: |
+          bin=target/x86_64-unknown-linux-musl/release/inode
+          file "$bin"
+          file "$bin" | grep -Eq 'statically linked|static-pie linked'
+          "$bin" --version
+      - name: Package
+        run: |
+          ver=${{ needs.version.outputs.version }}
+          name=inode-v$ver-x86_64-unknown-linux-musl
+          cp target/x86_64-unknown-linux-musl/release/inode "$name"
+          sha256sum "$name" > "$name.sha256"
+          echo "ASSET=$name" >> $GITHUB_ENV
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: inode-x86_64-unknown-linux-musl
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256
+      - name: Upload to release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "inode $GITHUB_REF_NAME" --generate-notes 2>/dev/null || true
+          gh release upload "$GITHUB_REF_NAME" "$ASSET" "$ASSET.sha256" --clobber
+
+  image:
+    name: Container image
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=v${{ needs.version.outputs.version }}
+            type=sha,prefix=sha-,format=short
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -4,6 +4,16 @@ Rust 编写的实验性 H3C SSL VPN 命令行客户端，目标平台为 Windows
 
 Windows、Linux、macOS 的 x64 与 ARM64 共六个目标，都在 GitHub 托管 runner 上以管理员/root 跑过完整 CLI 系统测试：模拟网关登录、创建真实内核 TUN、经 TLS 完成 ICMP 往返、断开后回收接口与路由。但模拟网关不等于真实设备，这是实验性项目，真实 H3C 网关的端到端连通仍需自行验收。
 
+## 获取
+
+- **静态二进制**：GitHub Releases 里的 `inode-v<版本>-x86_64-unknown-linux-musl` 完全不依赖系统库（glibc、OpenSSL 都不需要），下载后 `chmod +x` 直接运行。其余平台的常规构建也在同一 Release 中。
+- **容器镜像**：`ghcr.io/pingod/inode-cli`，标签 `latest`、`v<版本>`、`sha-<短提交>`，发布 `linux/amd64`。
+
+```sh
+docker pull ghcr.io/pingod/inode-cli:latest
+docker run --rm ghcr.io/pingod/inode-cli --version
+```
+
 ## 构建
 
 安装 Rust 1.92 或更新版本，运行：
@@ -13,11 +23,11 @@ cargo build --locked --release
 cargo test --locked --all-targets
 ```
 
-Linux 构建需要 C 编译器、pkg-config、OpenSSL 开发包；运行需要 `/dev/net/tun` 和 iproute2。Windows 构建需要 MSVC C++ 工具链；连接时将官方、与 CPU 架构匹配的 [wintun.dll](https://www.wintun.net/) 放在 inode.exe 旁（Release 的 Windows zip 已附带对应架构的 wintun.dll，解压即用）。macOS 使用系统 utun 和 route。建立接口及配置路由需要管理员/root 权限；probe、authenticate 不需要。
+Linux 构建需要 C 编译器、pkg-config、OpenSSL 开发包；`x86_64-unknown-linux-musl` 静态目标改用 vendored OpenSSL，构建时需要 musl 工具链、`perl` 和 `make`。运行需要 `/dev/net/tun` 和 iproute2。Windows 构建需要 MSVC C++ 工具链；连接时将官方、与 CPU 架构匹配的 [wintun.dll](https://www.wintun.net/) 放在 inode.exe 旁（Release 的 Windows zip 已附带对应架构的 wintun.dll，解压即用）。macOS 使用系统 utun 和 route。建立接口及配置路由需要管理员/root 权限；probe、authenticate 不需要。
 
 ## Docker
 
-镜像在 `rust:1.92-slim-bookworm` 里构建，运行阶段只带 `ca-certificates`、`libssl3` 和 `iproute2`，最终约 145 MB。APT 默认走 `mirrors.ustc.edu.cn`，crates 索引默认走 `rsproxy.cn`，两者都可用 `--build-arg APT_MIRROR=` / `CARGO_REGISTRY=` 覆盖；`Cargo.lock` 的校验和照常生效。
+镜像发布在 `ghcr.io/pingod/inode-cli`，也可以本地构建：基础阶段用 `rust:1.92-slim-bookworm`，运行阶段只带 `ca-certificates`、`libssl3` 和 `iproute2`，最终约 145 MB。APT 默认走 `mirrors.ustc.edu.cn`，crates 索引默认走 `rsproxy.cn`，两者都可用 `--build-arg APT_MIRROR=` / `CARGO_REGISTRY=` 覆盖；`Cargo.lock` 的校验和照常生效。
 
 ```sh
 docker build -t inode-cli .
@@ -126,11 +136,22 @@ inode captcha-test captcha.png
 
 ## 验证范围
 
-测试覆盖 XML/表单转义、客户端验证码字段大小写、握手下发的掩码与路由解析（含主机位归一、非法条目隔离、越界掩码拒绝）、验证码模型权重形状与卷积/池化/旋转/缩放算子、跨源跳转拒绝、证书指纹拒绝且无 HTTP 数据泄漏、模拟 TLS 登录/会话 Cookie/隧道收发/注销、分片及合并帧、非法 IPv4 数据、三平台路由参数与失败回收。自动检查 src/tests/examples 下每个 Rust 文件均不超过 300 行。`examples/system_e2e.rs` 在管理员/root 环境运行完整 CLI，通过测试地址 192.0.2.2 的 ICMP 验证实际内核 TUN 与 TLS 数据路径，并断言退出后没有残留接口和路由；`examples/system_e2e.rs` 的路由完全来自网关下发的 `ROUTES`，装错或没装 ICMP 就不通。`examples/reconnect_e2e.rs` 让模拟网关掐断已建立的隧道，断言客户端复用会话 Cookie 重开隧道。`.github/workflows/system-e2e.yml` 在六个 OS/架构组合上运行这两个测试。模拟网关仍不证明真实设备协议兼容性。`doctor` 仅检查本地前提，不证明实际连通。
+测试覆盖单端口代理的 HTTP/SOCKS5/SOCKS4a 解析与认证、`--insecure` 信任策略、XML/表单转义、客户端验证码字段大小写、握手下发的掩码与路由解析（含主机位归一、非法条目隔离、越界掩码拒绝）、验证码模型权重形状与卷积/池化/旋转/缩放算子、跨源跳转拒绝、证书指纹拒绝且无 HTTP 数据泄漏、模拟 TLS 登录/会话 Cookie/隧道收发/注销、分片及合并帧、非法 IPv4 数据、三平台路由参数与失败回收。自动检查 src/tests/examples 下每个 Rust 文件均不超过 300 行。`examples/system_e2e.rs` 在管理员/root 环境运行完整 CLI，通过测试地址 192.0.2.2 的 ICMP 验证实际内核 TUN 与 TLS 数据路径，并断言退出后没有残留接口和路由；`examples/system_e2e.rs` 的路由完全来自网关下发的 `ROUTES`，装错或没装 ICMP 就不通。`examples/reconnect_e2e.rs` 让模拟网关掐断已建立的隧道，断言客户端复用会话 Cookie 重开隧道。`.github/workflows/system-e2e.yml` 在六个 OS/架构组合上运行这两个测试。模拟网关仍不证明真实设备协议兼容性。`doctor` 仅检查本地前提，不证明实际连通。
 
 当前仅支持 IPv4，不支持后台服务。隧道只有 TLS 一条通道：H3C 官方 SSL VPN 白皮书与 OpenConnect 的实现都只描述 SSL 封装的 IP 接入，公开资料里没有可参考的 UDP/DTLS 通道，所以没有 UDP 加速。重连只覆盖隧道层：会话 Cookie 失效后仍需重新运行命令并输入密码。
 
 协议研究参考 [OpenConnect H3C 草案 MR 397](https://gitlab.com/openconnect/openconnect/-/merge_requests/397) 及目标网关公开的协议发现和登录页面。此项目不是 H3C 官方 iNode 客户端。
+
+## 发布
+
+`.github/workflows/release.yml` 在推送 `v*` 标签或手动 `workflow_dispatch` 时构建两类制品：
+
+| 制品 | 内容 |
+|---|---|
+| 二进制 | 六个平台（Windows x64/ARM64、Linux x64/ARM64、macOS x64/ARM64）的 Release 资产，外加 `inode-v<版本>-x86_64-unknown-linux-musl` 静态构建；每个文件附 `.sha256`，同时以 Actions artifact 上传 |
+| 容器镜像 | `ghcr.io/<仓库>:latest`、`v<版本>`、`sha-<短提交>`，推送 `linux/amd64` |
+
+标签构建会校验 `Cargo.toml` 版本与标签一致；手动触发只构建并上传 Actions artifact，不创建 Release。`.github/workflows/ci.yml` 在每次 push/PR 上跑格式化、clippy、测试，并做一次不推送的镜像构建。
 
 ## 许可
 
