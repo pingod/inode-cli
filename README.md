@@ -6,7 +6,7 @@ Windows、Linux、macOS 的 x64 与 ARM64 共六个目标，都在 GitHub 托管
 
 ## 获取
 
-- **静态二进制**：GitHub Releases 里的 `inode-v<版本>-x86_64-unknown-linux-musl` 完全不依赖系统库（glibc、OpenSSL 都不需要），下载后 `chmod +x` 直接运行。其余平台的常规构建也在同一 Release 中。
+- **静态二进制**：GitHub Releases 里的 `inode-v<版本>-x86_64-linux-musl` 完全不依赖系统库（glibc、OpenSSL 都不需要），下载后 `chmod +x` 直接运行。其余平台的常规构建也在同一 Release 中。
 - **容器镜像**：`ghcr.io/pingod/inode-cli`，标签 `latest`、`v<版本>`、`sha-<短提交>`，发布 `linux/amd64`。
 
 ```sh
@@ -148,7 +148,7 @@ inode captcha-test captcha.png
 
 | 制品 | 内容 |
 |---|---|
-| 二进制 | 六个平台（Windows x64/ARM64、Linux x64/ARM64、macOS x64/ARM64）的 Release 资产，外加 `inode-v<版本>-x86_64-unknown-linux-musl` 静态构建；每个文件附 `.sha256`，同时以 Actions artifact 上传 |
+| 二进制 | 六个平台（Windows x64/ARM64、Linux x64/ARM64、macOS x64/ARM64）的 Release 资产，外加 `inode-v<版本>-x86_64-linux-musl` 静态构建；文件名基于 target triple 但去掉 `-unknown`（如 `x86_64-linux-gnu`、`aarch64-linux-gnu`、`x86_64-linux-musl`），每个文件附 `.sha256`，同时以 Actions artifact 上传 |
 | 容器镜像 | `ghcr.io/<仓库>:latest`、`v<版本>`、`sha-<短提交>`，推送 `linux/amd64` |
 
 标签构建会校验 `Cargo.toml` 版本与标签一致；手动触发只构建并上传 Actions artifact，不创建 Release。`.github/workflows/ci.yml` 在每次 push/PR 上跑格式化、clippy、测试，并做一次不推送的镜像构建。
