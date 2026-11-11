@@ -36,8 +36,12 @@ async fn gateway() -> (String, String, tokio::task::JoinHandle<()>) {
         let mut received = Vec::new();
         let mut byte = [0u8; 1];
         while !received.ends_with(b"\r\n\r\n") {
-            tls.read_exact(&mut byte).await.unwrap();
-            received.push(byte[0]);
+            match tls.read(&mut byte).await {
+                // A client that rejects the certificate may abort instead of
+                // sending a TLS close_notify; Windows surfaces that as an error.
+                Ok(0) | Err(_) => return,
+                Ok(_) => received.push(byte[0]),
+            }
         }
         assert!(String::from_utf8_lossy(&received).starts_with("GET /svpn/index.cgi"));
         let body = "<data><gatewayinfo><auth><supportPassword>true</supportPassword></auth><url><login>/login</login><logout>/logout</logout></url></gatewayinfo></data>";
